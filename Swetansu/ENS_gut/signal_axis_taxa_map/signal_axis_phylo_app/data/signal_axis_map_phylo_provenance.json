@@ -1,0 +1,21 @@
+{
+ "route": "gtdb",
+ "gtdb_version": "v232",
+ "md5": {
+  "VERSION.txt": "3694fd3116957f0124d3a19a45a49de4",
+  "bac120.tree.gz": "58a23a44a2c51b0f69f58e2484aed437",
+  "ar53.tree.gz": "a647ab8b609f57c117debba3f34d43a5",
+  "bac120_taxonomy.tsv.gz": "807e3221f5553142eb0544ce3247d079",
+  "ar53_taxonomy.tsv.gz": "9fa569a0804c46e4ba8dcd85a5bc5240",
+  "bac120_metadata.tsv.gz": "0ba4237077b65cfc5556e1d8be797485",
+  "ar53_metadata.tsv.gz": "0f51fe6f01b4ccbf0d9bab6c07df87af"
+ },
+ "n_bac_tips": 189801,
+ "n_ar_tips": 10122,
+ "n_placed": 54,
+ "n_unplaced": 0,
+ "max_clade": 300,
+ "seed": 0,
+ "domain_join": "arbitrary stem; bac120 and ar53 trees are separate",
+ "failures": []
+}
