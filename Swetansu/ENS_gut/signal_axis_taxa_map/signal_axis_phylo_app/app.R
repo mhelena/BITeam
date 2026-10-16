@@ -1,13 +1,12 @@
 # =============================================================================
 # signal_axis_phylo_app.R
 #
-# Interactive highlighting of signal axes on the microbial phylogeny drawn by
-# microbe_phylogeny.py (signal_axis_map_phylo).
+# Interactive highlighting of signal axes on the microbial phylogeny 
 #
 # Run:   shiny::runApp("signal_axis_phylo_app.R")
 #        (to browse the 16S-fallback tree instead: Sys.setenv(SIGNAL_AXIS_PREFIX = "signal_axis_map_phylo_16S_fallback_test") first)
 # Needs: shiny, ggplot2, dplyr, readr, tidyr   (no ape / ggtree)
-#
+# Newick function used to interactively highlight branch structure in dendrogram
 # Data (put these three files, plus the optional fourth, in a `data/` folder next
 # to this script, or in the same folder):
 #   signal_axis_map_phylo_tips.csv        one row per tip: label, GTDB species, rank, flags
@@ -15,18 +14,8 @@
 #   signal_axis_map_phylo.nwk             the pruned tree (tip labels = source_id)
 #   signal_axis_map_phylo_provenance.json optional: route/release, marks arbitrary stems
 #
-# The tips CSV carries no axis membership and no tree, so the app joins it to the
-# membership table on `taxid` and to the tree on `source_id`.
-#
-# What "breadth" means: the total length of the smallest subtree connecting the
-# selected taxa (unrooted), in the tree's own branch-length units. It is NOT Faith's
-# PD (which adds the path to the root). GTDB's bacterial and archaeal trees are
-# inferred separately and joined here by arbitrary stems, so breadth is computed
-# WITHIN each of those trees and summed: a lone taxon in one tree (the archaeon)
-# contributes 0, and the arbitrary stems never count. A single taxon has breadth 0.
-#
-# The taxa are representative examples named in panel_curation.py, not taxa
-# measured in any cohort: nothing here is an abundance or prevalence result.
+# Contact: swetansu@gmail.com
+# 
 # =============================================================================
 suppressPackageStartupMessages({
   library(shiny); library(ggplot2); library(dplyr); library(readr); library(tidyr)
