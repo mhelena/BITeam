@@ -1,0 +1,72 @@
+# Genotype and sequence data
+*.bed
+*.bim
+*.fam
+*.pgen
+*.pvar
+*.psam
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.vcf.gz.csi
+*.bcf
+*.bcf.csi
+*.bgz
+*.bam
+*.cram
+*.fastq.gz
+*.fq.gz
+
+# PLINK and PRSice outputs (individual level)
+*.eigenvec
+*.eigenval
+*.all_score
+*.all.score
+*.best
+*.prsice
+*.snp
+*.profile
+*.sscore
+*.king*
+*.het
+*.hwe
+*.frq
+*.afreq
+*.smiss
+*.vmiss
+*.log
+*.nosex
+
+# Sample lists, phenotypes and covariates
+pheno*.txt
+cov*.txt
+samples*.txt
+*_samples.txt
+*.keep
+*.remove
+
+# Office files and spreadsheets
+*.xlsx
+*.xls
+*.docx
+*.pptx
+*.pdf
+
+# Working directories
+data/
+results/
+logs/
+scratch/
+tmp/
+.snakemake/
+__pycache__/
+*.pyc
+.Rhistory
+.RData
+.Rproj.user/
+
+# Editors and OS
+.DS_Store
+.claude/
+.vscode/
+.idea/
