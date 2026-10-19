@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+# Not GCTA: a PLINK2 wrapper kept under the name gcta64 so 04_pca_gcta.sh runs unchanged.
+# Supports: --bfile P --pca N --out O, and --bfile P --project-loading PREFIX N --out O.
+import sys, os, subprocess, shutil
+import pandas as pd
+
+PLINK2 = os.environ.get("PLINK2") or shutil.which("plink2")
+if PLINK2 is None:
+    sys.exit("ERROR: plink2 not found in PATH (or set PLINK2)")
+
+
+def run(cmd):
+    print(f"[gcta64-wrapper] {cmd}", flush=True)
+    subprocess.run(cmd, shell=True, check=True)
+
+
+def sscore_to_eigenvec(sscore_file, out_file):
+    df = pd.read_csv(sscore_file, sep="\t")
+    df.columns = [c.lstrip("#") for c in df.columns]
+    if "IID" in df.columns and "SID" in df.columns:
+        df = df.drop(columns=["SID"])
+    elif "SID" in df.columns:
+        df = df.rename(columns={"SID": "IID"})
+    if "FID" not in df.columns:
+        df.insert(0, "FID", df["IID"])
+    pc_sum_cols = sorted(
+        [c for c in df.columns if c.endswith("_SUM") and "PC" in c],
+        key=lambda x: int("".join(filter(str.isdigit, x.replace("_SUM", ""))))
+    )
+    pc_cols = [c.replace("_SUM", "") for c in pc_sum_cols]
+    df = df.rename(columns=dict(zip(pc_sum_cols, pc_cols)))
+    out_df = df[["FID", "IID"] + pc_cols]
+    out_df.to_csv(out_file, sep="\t", index=False, header=False)
+    return out_df
+
+
+def pca_mode(bfile, n_pcs, threads, out):
+    tmp = out + "_p2tmp"
+
+    # Exact PCA; plink2 recommends approx only above ~5000 samples.
+    run(f"{PLINK2} --bfile {bfile} --pca allele-wts {n_pcs} "
+        f"--threads {threads} --out {tmp}")
+    run(f"{PLINK2} --bfile {bfile} --freq --threads {threads} --out {tmp}")
+
+    shutil.copy(tmp + ".eigenval", out + ".eigenval")
+    shutil.copy(tmp + ".eigenvec.allele", out + ".eigenvec.allele")
+    shutil.copy(tmp + ".afreq", out + ".afreq")
+
+    # eigenvec.allele has a REF and an ALT row per variant; keeping only ALT
+    # avoids double-counting each variant in --score.
+    adf = pd.read_csv(tmp + ".eigenvec.allele", sep="\t")
+    adf.columns = [c.lstrip("#") for c in adf.columns]
+    pc_cols = [c for c in adf.columns if c.startswith("PC")]
+    alt_col = next((c for c in adf.columns if c.upper() in ("ALT", "A2")), None)
+    if alt_col:
+        adf = adf[adf["A1"] == adf[alt_col]]
+    adf[["ID", "A1"] + pc_cols].to_csv(out + ".eigenvec.allele.score", sep="\t", index=False)
+
+    # Reference samples are re-scored with --score rather than taking plink2's
+    # eigenvectors, so reference and projected study PCs are on the same scale.
+    last_col = 2 + int(n_pcs)
+    ref_score_tmp = out + "_ref_score_tmp"
+    run(f"{PLINK2} --bfile {bfile} "
+        f"--read-freq {out}.afreq "
+        f"--score {out}.eigenvec.allele.score header-read variance-standardize "
+        f"cols=maybefid,sid,scoresums --score-col-nums 3-{last_col} "
+        f"--threads {threads} "
+        f"--out {ref_score_tmp}")
+    sscore_to_eigenvec(ref_score_tmp + ".sscore", out + ".eigenvec")
+
+    print(f"[gcta64-wrapper] PCA done: {n_pcs} PCs, prefix {out}", flush=True)
+
+
+def project_mode(bfile, load_prefix, n_pcs, threads, out):
+    allele_file = load_prefix + ".eigenvec.allele"
+    freq_file = load_prefix + ".afreq"
+    clean_score = load_prefix + ".eigenvec.allele.score"
+
+    if not os.path.exists(allele_file):
+        sys.exit(f"ERROR: {allele_file} not found, run --pca first")
+    if not os.path.exists(clean_score):
+        sys.exit(f"ERROR: {clean_score} not found, re-run --pca")
+
+    tmp = out + "_projtmp"
+    last_col = 2 + int(n_pcs)
+    run(f"{PLINK2} --bfile {bfile} "
+        f"--read-freq {freq_file} "
+        f"--score {clean_score} header-read variance-standardize cols=maybefid,sid,scoresums "
+        f"--score-col-nums 3-{last_col} "
+        f"--threads {threads} "
+        f"--out {tmp}")
+    out_df = sscore_to_eigenvec(tmp + ".sscore", out + ".proj.eigenvec")
+
+    print(f"[gcta64-wrapper] Projection done: {len(out_df)} samples, "
+          f"{out}.proj.eigenvec", flush=True)
+
+
+def main():
+    args = sys.argv[1:]
+    bfile, n_pcs, load_prefix, thread_num, out = None, None, None, "4", None
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--bfile":
+            bfile = args[i + 1]; i += 2
+        elif a == "--pca":
+            n_pcs = int(args[i + 1]); i += 2
+        elif a == "--project-loading":
+            load_prefix = args[i + 1]
+            n_pcs = int(args[i + 2]); i += 3
+        elif a in ("--thread-num", "--threads"):
+            thread_num = args[i + 1]; i += 2
+        elif a == "--out":
+            out = args[i + 1]; i += 2
+        else:
+            i += 1
+
+    if out is None:
+        sys.exit("ERROR: --out required")
+
+    if load_prefix:
+        project_mode(bfile, load_prefix, n_pcs, thread_num, out)
+    elif n_pcs is not None:
+        pca_mode(bfile, n_pcs, thread_num, out)
+    else:
+        sys.exit("ERROR: specify --pca N or --project-loading PREFIX N")
+
+
+if __name__ == "__main__":
+    main()

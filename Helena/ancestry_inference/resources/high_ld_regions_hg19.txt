@@ -1,0 +1,18 @@
+# High-LD regions to exclude before LD pruning (GRCh37 / hg19 coordinates)
+# Format: CHR START END REGION_NAME
+# Sources: Price et al. 2008; Anderson et al. 2010
+chr1	48000000	52000000	chr1_hla_like
+chr2	86000000	100500000	chr2_inversion
+chr2	134500000	138000000	chr2_inversion2
+chr3	47500000	50000000	chr3_inversion
+chr5	44500000	50500000	chr5_inversion
+chr6	25000000	35000000	chr6_MHC
+chr6	57000000	64000000	chr6_extended_MHC
+chr7	55000000	66000000	chr7_inversion
+chr8	8000000	12000000	chr8_inversion
+chr8	43000000	50000000	chr8_inversion2
+chr10	37000000	43000000	chr10_inversion
+chr11	45000000	57000000	chr11_inversion
+chr12	33000000	40000000	chr12_inversion
+chr17	40000000	43000000	chr17_inversion
+chr18	15000000	20000000	chr18_inversion

@@ -1,0 +1,55 @@
+# Local profile. config/cluster.yaml is layered on top of this for HPC runs.
+
+# Input: set exactly one of these. Priority is input_vcf_list > input_vcf_dir > input_vcf.
+# input_vcf_dir and input_vcf_list are merged with bcftools first (step 0).
+input_vcf: "data/cohort.vcf.gz"
+input_vcf_dir: ""
+input_vcf_list: []
+
+# hg38 or hg19
+genome_build: "hg38"
+
+# Prefix of an existing 1KGP3 PLINK fileset (.bed/.bim/.fam or .pgen/.pvar/.psam).
+# Leave empty to use the copy downloaded by step 2.
+ref_1kg_plink: ""
+
+output_dir: "results"
+log_dir: "logs"
+
+qc:
+  maf: 0.05
+  max_missing: 0.01
+  # Per-variant medians across samples. GEL uses 30 for both; the local
+  # profile has been run with the lower values below.
+  min_gq: 15
+  min_dp: 10
+  hwe_pval: 1.0e-5
+
+# GEL uses r2 = 0.1; this pipeline has been run with 0.5.
+ld_pruning:
+  window_kb: 500
+  step: 50
+  r2: 0.5
+
+pca:
+  n_pcs: 20
+  n_pcs_classify: 8
+
+relatedness:
+  king_cutoff: 0.0442
+
+classifier:
+  n_estimators: 400
+  random_state: 42
+  probability_threshold: 0.8
+  # kNN on reference PCs for samples the RF leaves below probability_threshold
+  knn_k: 50
+  knn_threshold: 0.7
+
+threads:
+  plink: 8
+  gcta: 8
+
+# MB, passed to the scheduler as mem_mb for the PCA rule
+memory:
+  gcta: 32000

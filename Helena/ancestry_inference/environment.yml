@@ -1,0 +1,19 @@
+name: ancestry_inference
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10
+  - snakemake-minimal>=7.18
+  - pandas>=1.5
+  - numpy>=1.23
+  - scikit-learn>=1.1
+  - joblib>=1.2
+  - matplotlib>=3.6
+  # MEDIAN() in bcftools filter expressions needs >= 1.14
+  - bcftools>=1.17
+  - htslib>=1.17
+  # plink is PLINK 1.9. Real GCTA is not needed: bin/gcta64 wraps plink2.
+  - plink
+  - plink2
+  - wget

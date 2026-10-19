@@ -1,0 +1,283 @@
+# Ancestry inference following the GEL AggV2 protocol: VCF QC, merge with 1KGP3,
+# PCA on the reference with study samples projected, random forest classifier.
+# Run with run_pipeline.sh, or: snakemake -j 8 --configfile config/<profile>.yaml
+
+configfile: "config/config.yaml"
+
+# Input priority: input_vcf_list > input_vcf_dir > input_vcf
+_vcf_list = config.get("input_vcf_list") or []
+_vcf_dir  = config.get("input_vcf_dir") or ""
+INPUT_VCF = (
+    f"{config['output_dir']}/00_merged/merged_input.vcf.gz"
+    if (_vcf_list or _vcf_dir)
+    else config["input_vcf"]
+)
+
+OUT        = config["output_dir"]
+LOG        = config.get("log_dir", "logs")
+BUILD      = config["genome_build"]
+MAF        = config["qc"]["maf"]
+MAX_MISS   = config["qc"]["max_missing"]
+MIN_GQ     = config["qc"]["min_gq"]
+MIN_DP     = config["qc"]["min_dp"]
+HWE        = config["qc"]["hwe_pval"]
+WIN_KB     = config["ld_pruning"]["window_kb"]
+LD_STEP    = config["ld_pruning"]["step"]
+LD_R2      = config["ld_pruning"]["r2"]
+N_PCS      = config["pca"]["n_pcs"]
+N_PCS_CL   = config["pca"]["n_pcs_classify"]
+KING_CUT   = config["relatedness"]["king_cutoff"]
+N_TREES    = config["classifier"]["n_estimators"]
+RF_SEED    = config["classifier"]["random_state"]
+THRESHOLD  = config["classifier"]["probability_threshold"]
+KNN_K      = config["classifier"].get("knn_k", 50)
+KNN_THRESH = config["classifier"].get("knn_threshold", 0.7)
+T_PLINK    = config["threads"]["plink"]
+T_GCTA     = config["threads"]["gcta"]
+HIGH_LD    = f"resources/high_ld_regions_{BUILD}.txt"
+
+rule all:
+    input:
+        f"{OUT}/06_plots/ancestry_pca_PC1_PC2.png",
+        f"{OUT}/06_plots/ancestry_ancestry_counts.png",
+        f"{OUT}/05_classify/ancestry_ancestry_assignments.tsv",
+        f"{OUT}/05_classify/ancestry_summary.json",
+
+if _vcf_list:
+    rule merge_vcfs:
+        input:
+            vcfs = _vcf_list,
+        output:
+            vcf      = f"{OUT}/00_merged/merged_input.vcf.gz",
+            filelist = f"{OUT}/00_merged/vcf_list.txt",
+        log:
+            f"{LOG}/00_merge_vcfs.log"
+        threads: T_PLINK
+        shell:
+            """
+            mkdir -p $(dirname {output.vcf})
+            printf '%s\\n' {input.vcfs} > {output.filelist}
+            bash scripts/00_merge_vcfs.sh \
+                {output.filelist} \
+                {output.vcf} \
+                {threads} \
+            > {log} 2>&1
+            """
+elif _vcf_dir:
+    rule merge_vcfs:
+        input:
+            vcf_dir = _vcf_dir,
+        output:
+            vcf = f"{OUT}/00_merged/merged_input.vcf.gz",
+        log:
+            f"{LOG}/00_merge_vcfs.log"
+        threads: T_PLINK
+        shell:
+            """
+            bash scripts/00_merge_vcfs.sh \
+                {input.vcf_dir} \
+                {output.vcf} \
+                {threads} \
+            > {log} 2>&1
+            """
+
+# HWE is not applied here; it runs in merge_and_prune, per 1KGP3 super-population.
+rule qc_vcf:
+    input:
+        vcf = INPUT_VCF,
+    output:
+        bed = f"{OUT}/01_qc/study_qc_noatgc.bed",
+        bim = f"{OUT}/01_qc/study_qc_noatgc.bim",
+        fam = f"{OUT}/01_qc/study_qc_noatgc.fam",
+    log:
+        f"{LOG}/01_qc_vcf.log"
+    threads: T_PLINK
+    params:
+        out_prefix = f"{OUT}/01_qc/study_qc",
+        build      = BUILD,
+        maf        = MAF,
+        max_miss   = MAX_MISS,
+        min_gq     = MIN_GQ,
+        min_dp     = MIN_DP,
+    shell:
+        """
+        bash scripts/01_qc_vcf.sh \
+            {input.vcf} \
+            {params.out_prefix} \
+            {params.build} \
+            {params.maf} \
+            {params.max_miss} \
+            {params.min_gq} \
+            {params.min_dp} \
+            {threads} \
+        > {log} 2>&1
+        """
+
+rule prepare_reference:
+    output:
+        samples = f"{OUT}/02_reference/1kg_unrelated_samples.txt",
+        labels  = f"{OUT}/02_reference/1kg_super_pop_labels.tsv",
+    log:
+        f"{LOG}/02_prepare_reference.log"
+    params:
+        out_dir = f"{OUT}/02_reference",
+        build   = BUILD,
+    threads: T_PLINK
+    shell:
+        """
+        mkdir -p {params.out_dir}
+        bash scripts/02_prepare_reference.sh \
+            {params.out_dir} \
+            {params.build} \
+            {threads} \
+        > {log} 2>&1
+        """
+
+rule merge_and_prune:
+    input:
+        study_bed   = rules.qc_vcf.output.bed,
+        ref_samples = rules.prepare_reference.output.samples,
+        ref_labels  = rules.prepare_reference.output.labels,
+        high_ld     = HIGH_LD,
+    output:
+        bed = f"{OUT}/03_merge/merged_pruned_hwe.bed",
+        bim = f"{OUT}/03_merge/merged_pruned_hwe.bim",
+        fam = f"{OUT}/03_merge/merged_pruned_hwe.fam",
+    log:
+        f"{LOG}/03_merge_prune.log"
+    threads: T_PLINK
+    params:
+        study_prefix = f"{OUT}/01_qc/study_qc_noatgc",
+        ref_prefix   = lambda wildcards, input: (
+            config["ref_1kg_plink"]
+            if config.get("ref_1kg_plink")
+            else f"{OUT}/02_reference/all_{BUILD}"
+        ),
+        out_prefix   = f"{OUT}/03_merge/merged",
+        maf          = MAF,
+        window_kb    = WIN_KB,
+        step         = LD_STEP,
+        r2           = LD_R2,
+        hwe          = HWE,
+    shell:
+        """
+        bash scripts/03_merge_and_prune.sh \
+            {params.study_prefix} \
+            {params.ref_prefix} \
+            {input.ref_samples} \
+            {params.out_prefix} \
+            {input.high_ld} \
+            {params.window_kb} \
+            {params.step} \
+            {params.r2} \
+            {params.maf} \
+            {threads} \
+            {input.ref_labels} \
+            {params.hwe} \
+        > {log} 2>&1
+        """
+
+rule make_study_sample_list:
+    input:
+        study_fam   = f"{OUT}/01_qc/study_qc_noatgc.fam",
+        ref_samples = rules.prepare_reference.output.samples,
+    output:
+        study_list = f"{OUT}/03_merge/study_samples.txt",
+    run:
+        import pandas as pd
+        fam = pd.read_csv(input.study_fam, sep=r'\s+', header=None,
+                          names=['FID','IID','PAT','MAT','SEX','PHENO'])
+        ref = pd.read_csv(input.ref_samples, sep='\t', header=None, names=['FID','IID'])
+        study = fam[~fam['IID'].isin(ref['IID'])][['FID','IID']]
+        study.to_csv(output.study_list, sep='\t', index=False, header=False)
+        print(f"Study samples: {len(study)}")
+
+rule pca_gcta:
+    input:
+        merged_bed    = rules.merge_and_prune.output.bed,
+        ref_samples   = rules.prepare_reference.output.samples,
+        study_samples = f"{OUT}/03_merge/study_samples.txt",
+    output:
+        all_pcs    = f"{OUT}/04_pca/_all_pcs.tsv",
+        ref_eigvec = f"{OUT}/04_pca/_ref_pca.eigenvec",
+        ref_eigval = f"{OUT}/04_pca/_ref_pca.eigenval",
+    log:
+        f"{LOG}/04_pca_gcta.log"
+    threads: T_GCTA
+    resources:
+        mem_mb = config["memory"]["gcta"],
+    params:
+        merged_prefix = f"{OUT}/03_merge/merged_pruned_hwe",
+        out_prefix    = f"{OUT}/04_pca/",
+        n_pcs         = N_PCS,
+        king_cutoff   = KING_CUT,
+    shell:
+        """
+        bash scripts/04_pca_gcta.sh \
+            {params.merged_prefix} \
+            {input.ref_samples} \
+            {input.study_samples} \
+            {params.out_prefix} \
+            {params.n_pcs} \
+            {params.king_cutoff} \
+            {threads} \
+        > {log} 2>&1
+        """
+
+rule classify_ancestry:
+    input:
+        pcs    = rules.pca_gcta.output.all_pcs,
+        labels = rules.prepare_reference.output.labels,
+    output:
+        assignments = f"{OUT}/05_classify/ancestry_ancestry_assignments.tsv",
+        ref_preds   = f"{OUT}/05_classify/ancestry_reference_predictions.tsv",
+        summary     = f"{OUT}/05_classify/ancestry_summary.json",
+    log:
+        f"{LOG}/05_classify.log"
+    params:
+        out_prefix    = f"{OUT}/05_classify/",
+        n_pcs         = N_PCS_CL,
+        n_trees       = N_TREES,
+        threshold     = THRESHOLD,
+        random_state  = RF_SEED,
+        knn_k         = KNN_K,
+        knn_threshold = KNN_THRESH,
+    shell:
+        """
+        python3 scripts/05_ancestry_classifier.py \
+            --pcs           {input.pcs} \
+            --labels        {input.labels} \
+            --out-prefix    {params.out_prefix}ancestry \
+            --n-pcs         {params.n_pcs} \
+            --n-trees       {params.n_trees} \
+            --threshold     {params.threshold} \
+            --random-state  {params.random_state} \
+            --knn-k         {params.knn_k} \
+            --knn-threshold {params.knn_threshold} \
+            --save-model \
+        > {log} 2>&1
+        """
+
+rule plot_results:
+    input:
+        pcs         = rules.pca_gcta.output.all_pcs,
+        assignments = f"{OUT}/05_classify/ancestry_ancestry_assignments.tsv",
+        ref_preds   = f"{OUT}/05_classify/ancestry_reference_predictions.tsv",
+        ref_labels  = rules.prepare_reference.output.labels,
+    output:
+        pca_plot    = f"{OUT}/06_plots/ancestry_pca_PC1_PC2.png",
+        counts_plot = f"{OUT}/06_plots/ancestry_ancestry_counts.png",
+    log:
+        f"{LOG}/06_plots.log"
+    params:
+        out_prefix = f"{OUT}/06_plots/ancestry",
+    shell:
+        """
+        python3 scripts/06_plot_results.py \
+            --pcs             {input.pcs} \
+            --assignments     {input.assignments} \
+            --ref-predictions {input.ref_preds} \
+            --ref-labels      {input.ref_labels} \
+            --out-prefix      {params.out_prefix} \
+        > {log} 2>&1
+        """
