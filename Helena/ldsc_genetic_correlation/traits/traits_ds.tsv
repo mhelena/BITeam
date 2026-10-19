@@ -1,0 +1,7 @@
+name	label	file	snp_col	snp_type	a1_col	a2_col	effect_col	effect_type	p_col	n
+BMI	BMI	BMI_30108127-GCST006368-EFO_0004340.h.tsv.gz	hm_rsid	rsid	hm_effect_allele	hm_other_allele	hm_beta	beta	p_value	n
+Intelligence	Intelligence	Intelligence_29942086-GCST006250-EFO_0004337.h.tsv.gz	hm_rsid	rsid	hm_effect_allele	hm_other_allele	hm_beta	beta	p_value	n_analyzed
+EA	EA	EA_Okbay_27225129-EduYears_Main.txt.gz	MarkerName	rsid	A1	A2	Beta	beta	Pval	293723
+Epilepsy	Epilepsy	ILAE3_Caucasian_all_epilepsy_final.tbl	MarkerName	rsid	Allele1	Allele2	Beta	beta	P-value	Effective_N
+Longevity	Longevity	Longevity_Results_90th_percentile.txt.gz	SNP	chrbp	EA	NEA	Beta	beta	P-value	Effective_N
+mvAge	mvAge	mvAge.txt	SNP	rsid	A1	A2	BETA	beta	P	N

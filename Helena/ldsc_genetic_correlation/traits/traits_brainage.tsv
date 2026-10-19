@@ -1,0 +1,9 @@
+name	label	file	snp_col	snp_type	a1_col	a2_col	effect_col	effect_type	p_col	n
+brainage_gm	pBAG (GM)	BrainAge_gm_rsid.txt	SNP	rsid	A1	A2	BETA	beta	P	32634
+brainage_wm	pBAG (WM)	BrainAge_wm_rsid.txt	SNP	rsid	A1	A2	BETA	beta	P	32634
+brainage_gwm	pBAG (GWM)	BrainAge_gwm_rsid.txt	SNP	rsid	A1	A2	BETA	beta	P	32634
+epilepsy	Epilepsy	ILAE3_Epilepsy_37_rsid.txt	SNP	rsid	A1	A2	BETA	beta	P	29944/52538
+intelligence	Intelligence	Intelligence_37_rsid.txt	SNP	rsid	A1	A2	BETA	beta	P	269867
+longevity	Longevity	Longevity_37_rsid.txt	SNP	rsid	A1	A2	BETA	beta	P	11262/25483
+AD	AD	AD_37_rsid.txt	SNP	rsid	A1	A2	BETA	beta	P	21982/41944
+frailty	Frailty	Frailty_37_rsid.txt	SNP	rsid	A1	A2	BETA	beta	P	2100000
