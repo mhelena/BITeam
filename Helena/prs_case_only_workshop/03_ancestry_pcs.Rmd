@@ -1,0 +1,73 @@
+---
+title: "3. Ancestry and principal components"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+editor_options:
+  chunk_output_type: inline
+---
+
+Allele frequencies differ between ancestries, so the average PRS differs too, for reasons that have nothing to do with epilepsy. If our genotype groups differ in ancestry (and they can: some variants are much more common in one population), a PRS difference between them could be pure ancestry. Principal components (PCs) summarise each person's genetic ancestry, and we adjust for them in every comparison.
+
+```{r setup, message = FALSE}
+source("config.R")
+source("R/functions.R")
+groups <- read_tsv(file.path(RESULTS, "cohort_groups.tsv"), show_col_types = FALSE)
+QC_GENO <- file.path(QC_DIR, "cohort_qc")
+PRUNED  <- file.path(QC_DIR, "prune.prune.in")
+```
+
+## 1. Compute the PCs
+
+```{r}
+run_tool(PLINK2, c("--bfile", QC_GENO, "--extract", PRUNED, "--pca", 10, "--out", file.path(QC_DIR, "pca")), "pca")
+pcs  <- read_plink(file.path(QC_DIR, "pca.eigenvec"))
+eval <- scan(file.path(QC_DIR, "pca.eigenval"), quiet = TRUE)
+```
+
+## 2. How many PCs?
+
+The scree plot shows how much variation each PC captures. PCs after the "elbow" mostly describe noise.
+
+```{r, fig.width = 6, fig.height = 3.5}
+tibble(PC = 1:10, eigenvalue = eval) %>%
+  ggplot(aes(PC, eigenvalue)) + geom_line(colour = "grey50") + geom_point(size = 2.5) +
+  scale_x_continuous(breaks = 1:10) + labs(title = "Scree plot") + theme_workshop()
+```
+
+## 3. Look at the structure
+
+```{r, fig.width = 10, fig.height = 4.5}
+pc_dat <- pcs %>% left_join(groups, by = "IID")
+p1 <- ggplot(pc_dat, aes(PC1, PC2)) + geom_point(alpha = 0.5, colour = "grey40") +
+  labs(title = "Everyone") + theme_workshop()
+p2 <- pc_dat %>%
+  mutate(gene_group = coalesce(gene_group, "No monogenic diagnosis")) %>%
+  arrange(dx_status == "Monogenic") %>%
+  ggplot(aes(PC1, PC2, colour = gene_group)) +
+  geom_point(alpha = 0.7) +
+  scale_colour_manual(values = c(GROUP_COLOURS, "No monogenic diagnosis" = "grey85")) +
+  labs(title = "Coloured by gene group", colour = NULL) + theme_workshop()
+p1 + p2
+```
+
+**Question.** There are two clusters. Which genotype group is concentrated in the smaller one? Try colouring by `gene` instead of `gene_group`.
+
+```{r}
+# your code here
+
+# Suggested answer:
+# pc_dat %>% mutate(cluster = if_else(PC1 > 0, "right", "left")) %>%   # check the sign on your plot
+#   filter(dx_status == "Monogenic") %>% count(cluster, gene)
+```
+
+In real data this happens with **founder variants**: a variant that is common in one population because many people inherited it from a shared ancestor. If that population also has a different average PRS, comparing that gene with the others would mix up ancestry and polygenic risk. Adjusting for PCs is how we separate them. (A stricter alternative is to analyse one ancestry group only.)
+
+## 4. Save
+
+```{r}
+pcs %>% select(IID, all_of(paste0("PC", 1:10))) %>% write_tsv(file.path(RESULTS, "pcs.tsv"))
+```
+
+**Next:** `04_prs_scores.Rmd`.

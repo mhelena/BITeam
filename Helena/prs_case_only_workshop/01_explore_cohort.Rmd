@@ -1,0 +1,175 @@
+---
+title: "1. Explore the cohort and define the genotype groups"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+editor_options:
+  chunk_output_type: inline
+---
+
+**How to use this notebook.** Run one chunk at a time with the green Run arrow (or Ctrl/Cmd + Shift + Enter) and look at the output before moving on. Chunks marked **Your turn** are for you to complete; a suggested answer is hidden in a comment underneath.
+
+Our cohort has **only people with epilepsy**: there are no healthy controls. Instead of comparing cases with controls, we will compare **groups of people inside the cohort, defined by their genotype**: for example, people whose epilepsy is explained by a single rare variant against people with no such variant. In this notebook we tidy the clinical data, summarise the genetic findings per person and build those groups.
+
+```{r setup, message = FALSE}
+source("config.R")
+source("R/functions.R")
+```
+
+## 1. The clinical table
+
+```{r}
+clin_raw <- read_tsv(CLINICAL, show_col_types = FALSE)
+glimpse(clin_raw)
+```
+
+Real clinical tables are rarely tidy. Before going further, look for problems:
+
+```{r}
+count(clin_raw, Sex)
+clin_raw %>% filter(is.na(suppressWarnings(as.numeric(`Age at onset (years)`)))) %>% count(`Age at onset (years)`)
+```
+
+Three problems: column names with spaces, sex written in five different ways, and age at onset stored as text because some entries say "unknown". Let's fix them.
+
+```{r}
+clin <- clin_raw %>%
+  rename(IID = `Participant ID`, sex = Sex, onset = `Age at onset (years)`,
+         epilepsy_type = `Epilepsy type`, drug_resistant = `Drug resistant`) %>%
+  mutate(sex   = case_when(tolower(sex) %in% c("m", "male")   ~ "Male",
+                           tolower(sex) %in% c("f", "female") ~ "Female"),
+         onset = suppressWarnings(as.numeric(onset)))
+count(clin, sex)
+summary(clin$onset)
+```
+
+**Your turn 1.** How many people have each epilepsy type, and what is the median age at onset in each?
+
+```{r}
+# your code here
+
+# Suggested answer:
+# clin %>% group_by(epilepsy_type) %>% summarise(n = n(), median_onset = median(onset, na.rm = TRUE))
+```
+
+## 2. The genetic findings
+
+The diagnostic testing reported rare variants, **one row per variant**. People with no reported variant are simply absent from this table.
+
+```{r}
+findings <- read_tsv(FINDINGS, show_col_types = FALSE)
+head(findings)
+count(findings, acmg)
+count(findings, gene, sort = TRUE)
+```
+
+Some people have more than one row:
+
+```{r}
+findings %>% count(IID) %>% filter(n > 1) %>% left_join(findings, by = "IID")
+```
+
+For the analysis we need **one row per person**. Rule: keep the most important finding, Pathogenic first, then Likely pathogenic, then VUS.
+
+```{r}
+per_person <- findings %>%
+  mutate(rank = match(acmg, c("Pathogenic", "Likely pathogenic", "VUS"))) %>%
+  arrange(IID, rank) %>%
+  group_by(IID) %>%
+  summarise(n_variants  = n(),
+            gene        = first(gene),
+            consequence = first(consequence),
+            acmg        = first(acmg),
+            .groups = "drop")
+head(per_person)
+```
+
+## 3. Define the genotype groups
+
+These are the "case" and "comparison" groups we will use later. Each is a new column.
+
+* **dx_status**: Monogenic (Pathogenic or Likely pathogenic variant), VUS only, or No variant reported.
+* **gene_group**: for people with a monogenic diagnosis, whether the gene is usually fully penetrant (almost every carrier has epilepsy) or has incomplete penetrance (many carriers are unaffected). The gene lists are in `config.R`.
+* **variant_class**: protein-truncating (PTV) or missense, for monogenic diagnoses.
+
+```{r}
+PTV_TERMS <- c("stop_gained", "frameshift_variant", "splice_donor_variant", "splice_acceptor_variant")
+
+groups <- clin %>%
+  left_join(per_person, by = "IID") %>%
+  mutate(
+    dx_status = case_when(acmg %in% c("Pathogenic", "Likely pathogenic") ~ "Monogenic",
+                          acmg == "VUS"                                  ~ "VUS only",
+                          TRUE                                           ~ "No variant reported"),
+    gene_group = case_when(dx_status != "Monogenic"        ~ NA_character_,
+                           gene %in% GENES_HIGH_PENETRANCE ~ "High penetrance",
+                           gene %in% GENES_INCOMPLETE      ~ "Incomplete penetrance",
+                           TRUE                            ~ "Other gene"),
+    variant_class = case_when(dx_status != "Monogenic"      ~ NA_character_,
+                              consequence %in% PTV_TERMS    ~ "PTV",
+                              consequence == "missense_variant" ~ "Missense"))
+
+count(groups, dx_status)
+count(groups, dx_status, gene_group, variant_class)
+```
+
+**Your turn 2.** Add a column `scn1a` that is "SCN1A" for people with a monogenic SCN1A diagnosis and "Other" for everyone else. How many are there?
+
+```{r}
+# your code here
+
+# Suggested answer:
+# groups <- groups %>% mutate(scn1a = if_else(dx_status == "Monogenic" & gene == "SCN1A", "SCN1A", "Other"))
+# count(groups, scn1a)
+```
+
+## 4. Who has genotypes?
+
+The genotype file (`.fam`) and the clinical table do not always contain the same people. Always check both directions.
+
+```{r}
+fam <- read_table(paste0(GENO, ".fam"), col_names = c("FID", "IID", "PAT", "MAT", "SEX", "PHENO"),
+                  show_col_types = FALSE)
+cat("Genotyped:", nrow(fam), "  In the clinical table:", nrow(groups), "\n")
+anti_join(groups, fam, by = "IID") %>% select(IID, epilepsy_type)   # clinical data, no genotypes
+anti_join(fam, groups, by = "IID") %>% select(IID)                  # genotypes, no clinical data
+```
+
+People without genotypes cannot get a PRS, so they drop out later automatically. Keep a note of the genotyped sample with no clinical record (here an ID ending in `_R`): we will meet it again in the QC notebook.
+
+## 5. A first look
+
+```{r, fig.width = 9, fig.height = 4}
+p1 <- ggplot(groups, aes(epilepsy_type, fill = dx_status)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = GROUP_COLOURS) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = NULL, y = "People", fill = NULL, title = "Diagnostic yield by epilepsy type") +
+  theme_workshop()
+p2 <- groups %>% filter(dx_status == "Monogenic") %>%
+  ggplot(aes(forcats::fct_infreq(gene), fill = gene_group)) +
+  geom_bar() +
+  scale_fill_manual(values = GROUP_COLOURS) +
+  labs(x = NULL, y = "People", fill = NULL, title = "Monogenic diagnoses by gene") +
+  theme_workshop() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+p1 + p2
+```
+
+**Your turn 3.** Is the age at onset different between the dx_status groups? Make a boxplot.
+
+```{r}
+# your code here
+
+# Suggested answer:
+# ggplot(groups, aes(dx_status, onset, fill = dx_status)) + geom_boxplot() +
+#   scale_fill_manual(values = GROUP_COLOURS, guide = "none") + scale_y_log10() + theme_workshop()
+```
+
+## 6. Save
+
+```{r}
+write_tsv(groups, file.path(RESULTS, "cohort_groups.tsv"))
+```
+
+**Next:** `02_genotype_qc.Rmd`.

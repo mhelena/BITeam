@@ -1,0 +1,196 @@
+---
+title: "5. Comparing genotype groups within the cohort"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+editor_options:
+  chunk_output_type: inline
+---
+
+## The idea
+
+Everyone in our cohort has epilepsy. Think of epilepsy as appearing when a person's total **liability** (genetic plus everything else) crosses a threshold. A person with a strongly damaging rare variant is pushed most of the way by that variant alone, so they need little polygenic risk to cross. A person with no such variant needs more.
+
+So **inside a case-only cohort**, people whose epilepsy is explained by a single rare variant should, on average, have a **lower** epilepsy PRS than people without one. By changing which genotype group plays the "case" and which the "comparison", we can ask several questions with the same scores.
+
+**Write the hypotheses down before running anything.** With several groups and eight thresholds it is easy to keep looking until something is significant. These are ours, with the expected direction:
+
+| | Case group | Comparison group | Expected |
+|---|---|---|---|
+| H1 (main) | No variant reported | Monogenic | higher PRS |
+| H2 | VUS only | Monogenic | higher PRS (a VUS usually does not explain the epilepsy) |
+| H3 | Incomplete-penetrance genes | High-penetrance genes | higher PRS (these variants need more help) |
+| H4 (exploratory) | Missense | PTV, in high-penetrance genes | higher PRS (missense often milder) |
+| Negative control | all of the above, with the **height** PRS | | no difference |
+
+```{r setup, message = FALSE}
+source("config.R")
+source("R/functions.R")
+```
+
+## 1. Put everything together
+
+```{r}
+groups <- read_tsv(file.path(RESULTS, "cohort_groups.tsv"), show_col_types = FALSE)
+pcs    <- read_tsv(file.path(RESULTS, "pcs.tsv"), show_col_types = FALSE)
+scores <- read_tsv(file.path(RESULTS, "prs_scores.tsv"), show_col_types = FALSE)
+
+dat <- scores %>%
+  inner_join(pcs, by = "IID") %>%
+  inner_join(groups, by = "IID") %>%
+  filter(!is.na(sex)) %>%
+  mutate(across(starts_with(c("epilepsy_Pt_", "height_Pt_")), ~ as.numeric(scale(.x)), .names = "{.col}_z"))
+
+# the main scores: at the threshold chosen in advance, in standard deviations
+dat <- dat %>% mutate(epilepsy_z = .data[[score_col(dat, "epilepsy", PT_MAIN)]],
+                      height_z   = .data[[score_col(dat, "height", PT_MAIN)]])
+
+cat(nrow(dat), "people in the analysis\n")
+count(dat, dx_status)
+```
+
+The scores are **standardised** (mean 0, SD 1 across the cohort), so a difference of 0.3 means "0.3 standard deviations".
+
+## 2. H1, step by step
+
+First, look:
+
+```{r, fig.width = 5.5, fig.height = 4.5}
+plot_groups(dat, case = dx_status == "No variant reported", control = dx_status == "Monogenic",
+            title = "H1: epilepsy PRS")
+```
+
+Then the model. We regress the PRS on group membership, adjusting for sex and the first PCs:
+
+```{r}
+h1_data <- dat %>% filter(dx_status %in% c("No variant reported", "Monogenic")) %>%
+  mutate(group = as.integer(dx_status == "No variant reported"))
+fit <- lm(epilepsy_z ~ group + sex + PC1 + PC2 + PC3 + PC4, data = h1_data)
+summary(fit)$coefficients["group", ]
+```
+
+`compare_groups()` does exactly this and returns one tidy row, which makes it easy to run many comparisons:
+
+```{r}
+compare_groups(dat, case = dx_status == "No variant reported", control = dx_status == "Monogenic", name = "H1")
+```
+
+**Reading it.** `diff_SD` is how much higher the PRS is in the case group, in SD; `low` and `high` are its 95% confidence interval. Is the direction the one we predicted?
+
+## 3. All the planned comparisons
+
+```{r}
+planned <- bind_rows(
+  compare_groups(dat, dx_status == "No variant reported", dx_status == "Monogenic", name = "H1 No variant vs monogenic"),
+  compare_groups(dat, dx_status == "VUS only", dx_status == "Monogenic", name = "H2 VUS only vs monogenic"),
+  compare_groups(dat, gene_group == "Incomplete penetrance", gene_group == "High penetrance",
+                 name = "H3 Incomplete vs high penetrance"),
+  compare_groups(dat, variant_class == "Missense" & gene_group == "High penetrance",
+                 variant_class == "PTV" & gene_group == "High penetrance", name = "H4 Missense vs PTV")
+)
+planned %>% mutate(P_bonferroni = pmin(P * n(), 1)) %>% mutate(across(where(is.double), ~ signif(.x, 2)))
+```
+
+We tested four hypotheses, so a strict correction multiplies each P by 4 (Bonferroni).
+
+**Your turn 1.** Which hypotheses are supported? Which comparison is too small to say much? (Look at `n_case` and `n_control`, and the width of the interval.)
+
+## 4. The negative control
+
+Same comparisons with the height PRS. We expect nothing.
+
+```{r, fig.width = 9, fig.height = 4}
+negative <- bind_rows(
+  compare_groups(dat, dx_status == "No variant reported", dx_status == "Monogenic", prs = "height_z", name = "H1 No variant vs monogenic"),
+  compare_groups(dat, dx_status == "VUS only", dx_status == "Monogenic", prs = "height_z", name = "H2 VUS only vs monogenic"),
+  compare_groups(dat, gene_group == "Incomplete penetrance", gene_group == "High penetrance", prs = "height_z",
+                 name = "H3 Incomplete vs high penetrance"),
+  compare_groups(dat, variant_class == "Missense" & gene_group == "High penetrance",
+                 variant_class == "PTV" & gene_group == "High penetrance", prs = "height_z", name = "H4 Missense vs PTV")
+)
+forest_plot(bind_rows(planned, negative)) +
+  scale_colour_manual(values = c(epilepsy_z = "#B2182B", height_z = "#7F7F7F"),
+                      labels = c("Epilepsy PRS", "Height PRS (negative control)"))
+```
+
+## 5. Why we adjust for PCs
+
+Run H3 with and without the PCs:
+
+```{r}
+bind_rows(
+  compare_groups(dat, gene_group == "Incomplete penetrance", gene_group == "High penetrance",
+                 covariates = "sex", name = "H3, sex only"),
+  compare_groups(dat, gene_group == "Incomplete penetrance", gene_group == "High penetrance",
+                 name = "H3, sex + PCs")
+) %>% mutate(across(where(is.double), ~ signif(.x, 2)))
+```
+
+**Question.** Why does the estimate change? (Hint: notebook 3, which gene sat in the smaller ancestry cluster?)
+
+## 6. Sensitivity: every threshold
+
+The main result uses `PT_MAIN`, chosen in advance. Here we check that the conclusion does not depend on that choice. This is a check, **not** a way to pick the best-looking threshold.
+
+```{r, fig.width = 8, fig.height = 4}
+by_threshold <- lapply(PT_LEVELS, function(pt) {
+  compare_groups(dat, dx_status == "No variant reported", dx_status == "Monogenic",
+                 prs = score_col(dat, "epilepsy", pt), name = format(pt))
+}) %>% bind_rows()
+
+ggplot(by_threshold, aes(factor(contrast, contrast), diff_SD)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_pointrange(aes(ymin = low, ymax = high), colour = "#B2182B") +
+  geom_point(data = ~ filter(.x, as.numeric(contrast) == PT_MAIN), size = 4, shape = 21, fill = NA, colour = "black") +
+  labs(x = "GWAS P value threshold", y = "Difference (SD)", title = "H1 at every threshold",
+       subtitle = "Circled: the threshold fixed in advance") + theme_workshop()
+```
+
+## 7. Do we have enough people?
+
+A quick power estimate: with these group sizes, what difference could we detect 80% of the time?
+
+```{r}
+detectable <- function(n1, n2, power = 0.8) {
+  n_eff <- 2 / (1 / n1 + 1 / n2)   # equivalent size of two equal groups
+  power.t.test(n = n_eff, power = power, sig.level = 0.05, alternative = "one.sided")$delta
+}
+planned %>% rowwise() %>% mutate(detectable_SD = round(detectable(n_case, n_control), 2)) %>%
+  select(contrast, n_case, n_control, diff_SD, detectable_SD)
+```
+
+## 8. Your turn
+
+**2.** Make your own genotype comparison: monogenic SCN1A against the other high-penetrance genes. What would you predict, and what do you find?
+
+```{r}
+# your code here
+
+# Suggested answer:
+# compare_groups(dat, gene == "SCN1A" & dx_status == "Monogenic",
+#                gene_group == "High penetrance" & gene != "SCN1A", name = "SCN1A vs other high penetrance")
+```
+
+**3.** The same tool works for clinical groups. Within people with **no** reported variant, is the PRS higher in those with drug-resistant epilepsy?
+
+```{r}
+# your code here
+
+# Suggested answer:
+# compare_groups(dat, dx_status == "No variant reported" & drug_resistant == "Yes",
+#                dx_status == "No variant reported" & drug_resistant == "No", name = "Drug resistant, no variant")
+```
+
+**4.** Change `PT_MAIN` in `config.R` to `5e-8`, re-run this notebook from the top and compare H1. What happens to the estimate and the interval, and why? (Change it back afterwards.)
+
+## 9. Save the results
+
+```{r}
+write_tsv(bind_rows(planned, negative), file.path(RESULTS, "contrasts_planned.tsv"))
+write_tsv(by_threshold, file.path(RESULTS, "contrast_H1_by_threshold.tsv"))
+ggsave(file.path(RESULTS, "forest_planned.png"), forest_plot(bind_rows(planned, negative)), width = 9, height = 4.5, dpi = 300)
+saveRDS(dat, file.path(RESULTS, "analysis_data.rds"))   # used by the interactive app
+```
+
+**Next:** open `06_app.R` and click **Run App** to explore any comparison you like.

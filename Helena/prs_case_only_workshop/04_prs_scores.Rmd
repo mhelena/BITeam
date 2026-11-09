@@ -1,0 +1,144 @@
+---
+title: "4. Prepare the GWAS and compute the polygenic scores"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+editor_options:
+  chunk_output_type: inline
+---
+
+A PRS is a weighted sum: for each SNP, the number of risk alleles a person carries times the effect size from a GWAS (the "base" data). Before scoring, we clean the GWAS. Then **PRSice** does two things: it removes SNPs in LD with a stronger SNP nearby ("clumping"), and it adds up the scores at several P value thresholds.
+
+**Why we do not let PRSice pick the threshold.** PRSice normally tests every threshold against a case/control phenotype and keeps the best one. We have no controls, and we want to compare several different groups later. So we ask PRSice only for the scores (`--no-regress`) and **fix the main threshold in advance** (`PT_MAIN` in `config.R`). The other thresholds are kept as a sensitivity check.
+
+We build two scores: **epilepsy** (the one we care about) and **height**, a negative control that should show no difference between our groups. If it does, something other than epilepsy risk (ancestry, batch) is driving the result.
+
+```{r setup, message = FALSE}
+source("config.R")
+source("R/functions.R")
+QC_GENO <- file.path(QC_DIR, "cohort_qc")
+bim <- read_tsv(paste0(QC_GENO, ".bim"), col_names = c("CHR", "SNP", "CM", "BP", "A1", "A2"), show_col_types = FALSE)
+```
+
+## 1. Look at the epilepsy GWAS
+
+```{r}
+gwas <- read_tsv(GWAS[["epilepsy"]], show_col_types = FALSE)
+glimpse(gwas)
+```
+
+Things to check in any GWAS file:
+
+```{r}
+cat("Rows:", nrow(gwas), "\n")
+cat("Duplicated SNP IDs:", sum(duplicated(gwas$SNP)), "\n")
+cat("Missing P values:", sum(is.na(gwas$P)), "\n")
+cat("Ambiguous SNPs (A/T or C/G):", sum(paste0(gwas$A1, gwas$A2) %in% c("AT", "TA", "CG", "GC")), "\n")
+cat("Effect allele frequency below 1%:", sum(pmin(gwas$FRQ, 1 - gwas$FRQ) < 0.01, na.rm = TRUE), "\n")
+```
+
+**Why ambiguous SNPs?** For A/T and C/G SNPs we cannot tell from the letters alone whether the GWAS and our data read the same DNA strand, so we may count the wrong allele. The safe choice is to drop them.
+
+## 2. Clean it
+
+The same cleaning is needed for every GWAS, so we write it once as a function.
+
+```{r}
+tidy_gwas <- function(file) {
+  read_tsv(file, show_col_types = FALSE) %>%
+    filter(!is.na(P), !is.na(BETA)) %>%                                    # no missing values
+    distinct(SNP, .keep_all = TRUE) %>%                                    # one row per SNP
+    filter(!paste0(A1, A2) %in% c("AT", "TA", "CG", "GC")) %>%             # no ambiguous SNPs
+    filter(pmin(FRQ, 1 - FRQ) >= 0.01)                                     # no very rare SNPs
+}
+base <- lapply(GWAS, tidy_gwas)
+sapply(base, nrow)
+```
+
+**Your turn 1.** How many SNPs of the cleaned epilepsy GWAS are also in our genotype data?
+
+```{r}
+# your code here
+
+# Suggested answer:
+# sum(base$epilepsy$SNP %in% bim$SNP)
+```
+
+## 3. Do the alleles match?
+
+The GWAS effect allele (`A1`) is not always the allele counted in our genotypes. PRSice handles swapped alleles automatically, but it is good to know how many there are, and SNPs whose alleles do not match at all are dropped.
+
+```{r}
+base$epilepsy %>%
+  inner_join(bim, by = "SNP", suffix = c("_gwas", "_geno")) %>%
+  mutate(match = case_when(A1_gwas == A1_geno & A2_gwas == A2_geno ~ "same orientation",
+                           A1_gwas == A2_geno & A2_gwas == A1_geno ~ "swapped (PRSice flips it)",
+                           TRUE                                    ~ "mismatch (dropped)")) %>%
+  count(match)
+```
+
+## 4. A quick Manhattan plot
+
+```{r, fig.width = 10, fig.height = 3.5}
+base$epilepsy %>%
+  arrange(CHR, BP) %>%
+  mutate(pos = row_number()) %>%
+  ggplot(aes(pos, -log10(P), colour = factor(CHR %% 2))) +
+  geom_point(size = 0.6, show.legend = FALSE) +
+  geom_hline(yintercept = -log10(5e-8), linetype = "dashed", colour = "#B2182B") +
+  scale_colour_manual(values = c("#332288", "#7F7F7F")) +
+  labs(x = "Position (chromosomes 1 to 22)", title = "Epilepsy GWAS") + theme_workshop()
+```
+
+## 5. Compute the scores with PRSice
+
+```{r}
+for (trait in names(base)) {
+  base_file <- file.path(PRS_DIR, paste0("base_", trait, ".tsv"))
+  write_tsv(base[[trait]], base_file)
+  run_tool(PRSICE, c("--base", base_file, "--snp", "SNP", "--chr", "CHR", "--bp", "BP",
+                     "--A1", "A1", "--A2", "A2", "--stat", "BETA", "--beta", "--pvalue", "P",
+                     "--target", QC_GENO,
+                     "--no-regress",                                       # scores only
+                     "--bar-levels", paste(PT_LEVELS, collapse = ","), "--fastscore",
+                     "--clump-kb", 250, "--clump-r2", 0.1, "--clump-p", 1,
+                     "--thread", THREADS, "--out", file.path(PRS_DIR, trait)),
+           paste0("prsice_", trait), show = 4)
+}
+```
+
+## 6. Read the scores
+
+PRSice writes one column per threshold (`Pt_0.1` is the score using SNPs with GWAS P < 0.1).
+
+```{r}
+scores <- lapply(names(base), function(trait) {
+  read_table(file.path(PRS_DIR, paste0(trait, ".all_score")), show_col_types = FALSE) %>%
+    select(-FID) %>%
+    rename_with(~ paste0(trait, "_", .x), starts_with("Pt_"))
+}) %>% purrr::reduce(inner_join, by = "IID")
+head(scores)
+```
+
+How similar are the scores at different thresholds?
+
+```{r, fig.width = 6.5, fig.height = 5}
+scores %>% select(starts_with("epilepsy_")) %>% cor() %>%
+  as_tibble(rownames = "a") %>% pivot_longer(-a, names_to = "b", values_to = "r") %>%
+  mutate(across(c(a, b), ~ factor(sub("epilepsy_Pt_", "", .x), as.character(PT_LEVELS)))) %>%
+  ggplot(aes(a, b, fill = r)) + geom_tile() + geom_text(aes(label = round(r, 2)), size = 3) +
+  scale_fill_gradient(low = "white", high = "#332288", limits = c(0, 1)) +
+  labs(x = "P value threshold", y = "P value threshold", title = "Correlation between epilepsy scores") +
+  theme_workshop() + theme(legend.position = "right")
+```
+
+**Question.** Why are the scores at P < 0.5 and P < 1 almost identical, while P < 5e-8 is different from the rest?
+
+## 7. Save
+
+```{r}
+write_tsv(scores, file.path(RESULTS, "prs_scores.tsv"))
+```
+
+**Next:** `05_within_cohort_contrasts.Rmd`.

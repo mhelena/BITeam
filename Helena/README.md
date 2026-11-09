@@ -13,6 +13,7 @@ Research Environment (GEL RE, LSF), the UCL CS cluster (SGE) or a local machine.
 | `rare_variant_vcf_qc/` | Variant QC of a joint-called VCF for rare-variant work, and building a multi-cohort VCF for burden tests | UCL CS, local, GEL RE |
 | `brainage_prs/` | PRS against predicted brain-age gap in ENIGMA-Epilepsy | local |
 | `ldsc_genetic_correlation/` | Pairwise genetic correlations between GWAS summary statistics with LDSC, plus heatmap and forest plot | local or HPC |
+| `prs_case_only_workshop/` | Teaching workshop: PRS within a case-only cohort, comparing genotype-defined groups, on a simulated cohort (R notebooks and a Shiny app) | local (RStudio) |
 
 Each folder has its own README with inputs, configuration and run order.
 

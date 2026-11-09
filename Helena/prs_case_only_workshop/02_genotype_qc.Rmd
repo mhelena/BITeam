@@ -1,0 +1,171 @@
+---
+title: "2. Genotype quality control"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+editor_options:
+  chunk_output_type: inline
+---
+
+A PRS adds up thousands of small effects, so a few bad samples or SNPs can shift it. Here we check the genotypes and remove what fails. **plink2** does the heavy lifting; we run it from R with `run_tool()`, read its output back into R and decide the thresholds by looking at plots.
+
+```{r setup, message = FALSE}
+source("config.R")
+source("R/functions.R")
+groups <- read_tsv(file.path(RESULTS, "cohort_groups.tsv"), show_col_types = FALSE)
+```
+
+## 1. Missing genotypes
+
+```{r}
+run_tool(PLINK2, c("--bfile", GENO, "--missing", "--out", file.path(QC_DIR, "raw")), "qc_missing")
+smiss <- read_plink(file.path(QC_DIR, "raw.smiss"))   # per sample
+vmiss <- read_plink(file.path(QC_DIR, "raw.vmiss"))   # per SNP
+```
+
+Choose your thresholds here, then look at the plots and change them if needed.
+
+```{r}
+MIND <- 0.05   # remove samples missing more than 5% of genotypes
+GENO_MAX <- 0.02   # remove SNPs missing in more than 2% of samples
+```
+
+```{r, fig.width = 9, fig.height = 3.5}
+p1 <- ggplot(smiss, aes(F_MISS)) + geom_histogram(bins = 60, fill = "grey60") +
+  geom_vline(xintercept = MIND, colour = "#B2182B", linetype = "dashed") +
+  labs(title = "Per sample", x = "Proportion missing", y = "Samples") + theme_workshop()
+p2 <- ggplot(vmiss, aes(F_MISS)) + geom_histogram(bins = 60, fill = "grey60") +
+  geom_vline(xintercept = GENO_MAX, colour = "#B2182B", linetype = "dashed") +
+  labs(title = "Per SNP", x = "Proportion missing", y = "SNPs") + theme_workshop()
+p1 + p2
+smiss %>% filter(F_MISS > MIND)
+cat(sum(vmiss$F_MISS > GENO_MAX), "SNPs above the threshold\n")
+```
+
+## 2. Allele frequency and Hardy-Weinberg equilibrium
+
+Very rare SNPs add noise to a PRS. A strong departure from Hardy-Weinberg equilibrium usually means a genotyping error.
+
+```{r}
+run_tool(PLINK2, c("--bfile", GENO, "--freq", "--hardy", "--out", file.path(QC_DIR, "raw")), "qc_freq_hwe")
+freq  <- read_plink(file.path(QC_DIR, "raw.afreq"))
+hardy <- read_plink(file.path(QC_DIR, "raw.hardy"))
+
+MAF_MIN <- 0.01
+HWE_P   <- 1e-6
+```
+
+```{r, fig.width = 9, fig.height = 3.5}
+freq <- freq %>% mutate(MAF = pmin(ALT_FREQS, 1 - ALT_FREQS))
+p1 <- ggplot(freq, aes(MAF)) + geom_histogram(bins = 50, fill = "grey60") +
+  geom_vline(xintercept = MAF_MIN, colour = "#B2182B", linetype = "dashed") +
+  labs(title = "Minor allele frequency", x = "MAF", y = "SNPs") + theme_workshop()
+p2 <- ggplot(hardy, aes(-log10(P))) + geom_histogram(bins = 60, fill = "grey60") +
+  geom_vline(xintercept = -log10(HWE_P), colour = "#B2182B", linetype = "dashed") +
+  labs(title = "Hardy-Weinberg test", x = "-log10(P)", y = "SNPs") + theme_workshop()
+p1 + p2
+cat(sum(freq$MAF < MAF_MIN), "SNPs below the MAF threshold;", sum(hardy$P < HWE_P), "SNPs fail HWE\n")
+```
+
+**Question.** Look at the SNPs failing HWE. Do they have too many or too few heterozygotes? (Compare `O(HET_A1)` with `E(HET_A1)`.)
+
+```{r}
+hardy %>% filter(P < HWE_P) %>% select(ID, `O(HET_A1)`, `E(HET_A1)`, P) %>% head()
+```
+
+## 3. Apply the sample and SNP filters
+
+```{r}
+step1 <- file.path(QC_DIR, "step1")
+run_tool(PLINK2, c("--bfile", GENO, "--mind", MIND, "--geno", GENO_MAX, "--maf", MAF_MIN, "--hwe", HWE_P,
+                   "--make-bed", "--out", step1), "qc_step1")
+```
+
+## 4. Independent SNPs for the next checks
+
+Heterozygosity, relatedness and principal components should use SNPs that are not in linkage disequilibrium (LD) with each other. We "prune" them: in windows of 200 SNPs, drop one of any pair with r2 > 0.1.
+
+```{r}
+run_tool(PLINK2, c("--bfile", step1, "--indep-pairwise", 200, 50, 0.1, "--out", file.path(QC_DIR, "prune")), "qc_prune")
+PRUNED <- file.path(QC_DIR, "prune.prune.in")
+cat(length(readLines(PRUNED)), "independent SNPs kept\n")
+```
+
+## 5. Heterozygosity
+
+Too many heterozygous calls suggests a contaminated sample (DNA from two people); too few suggests inbreeding or a poor sample. The F coefficient measures this; the usual rule removes samples more than 3 SD from the mean.
+
+```{r, fig.width = 6, fig.height = 3.5}
+run_tool(PLINK2, c("--bfile", step1, "--extract", PRUNED, "--het", "--out", file.path(QC_DIR, "het")), "qc_het")
+het <- read_plink(file.path(QC_DIR, "het.het"))
+het_lim <- mean(het$F) + c(-3, 3) * sd(het$F)
+ggplot(het, aes(F)) + geom_histogram(bins = 60, fill = "grey60") +
+  geom_vline(xintercept = het_lim, colour = "#B2182B", linetype = "dashed") +
+  labs(title = "Heterozygosity (F)", y = "Samples") + theme_workshop()
+het_out <- het %>% filter(F < het_lim[1] | F > het_lim[2])
+het_out
+```
+
+## 6. Relatedness and duplicates
+
+Comparing groups assumes the people are unrelated. KING estimates kinship for each pair: about 0.5 means the same person (duplicate or identical twin), about 0.25 first-degree relatives, about 0.125 second-degree. We list pairs above 0.0884 (second-degree or closer).
+
+We leave out the heterozygosity outliers first: a contaminated sample carries DNA from two people, so it looks "related" to other contaminated samples. (Try it: delete the `--remove` part and run the chunk again.)
+
+```{r}
+write_tsv(het_out %>% select(FID, IID), file.path(QC_DIR, "het_outliers.txt"), col_names = FALSE)
+run_tool(PLINK2, c("--bfile", step1, "--extract", PRUNED, "--remove", file.path(QC_DIR, "het_outliers.txt"),
+                   "--make-king-table", "--king-table-filter", 0.0884,
+                   "--out", file.path(QC_DIR, "king")), "qc_king")
+king <- read_plink(file.path(QC_DIR, "king.kin0")) %>%
+  mutate(relationship = case_when(KINSHIP > 0.354 ~ "duplicate / identical twin",
+                                  KINSHIP > 0.177 ~ "first degree",
+                                  TRUE            ~ "second degree"))
+king %>% select(IID1, IID2, KINSHIP, relationship)
+```
+
+From each pair we remove one person. Our rule, decided before looking at any PRS: **keep the person with clinical data; if both have it, keep the one with fewer missing genotypes.** (Some studies instead keep the person with a genetic finding, to keep the rarer group as large as possible.)
+
+```{r}
+miss_lookup <- setNames(smiss$F_MISS, smiss$IID)
+has_clin <- function(id) id %in% groups$IID
+related_out <- king %>%
+  mutate(remove = case_when(has_clin(IID1) & !has_clin(IID2) ~ IID2,
+                            has_clin(IID2) & !has_clin(IID1) ~ IID1,
+                            miss_lookup[IID1] >= miss_lookup[IID2] ~ IID1,
+                            TRUE ~ IID2)) %>%
+  pull(remove) %>% unique()
+related_out
+```
+
+**Your turn.** The duplicate pair: is one of them the sample without a clinical record that we noticed in notebook 1?
+
+```{r}
+# your code here
+
+# Suggested answer:
+# king %>% filter(relationship == "duplicate / identical twin") %>%
+#   mutate(IID1_has_clinical = IID1 %in% groups$IID, IID2_has_clinical = IID2 %in% groups$IID)
+```
+
+## 7. Remove the failed samples and save the clean genotypes
+
+```{r}
+remove <- tibble(IID = unique(c(het_out$IID, related_out)))
+write_tsv(remove %>% mutate(FID = IID, .before = 1), file.path(QC_DIR, "remove.txt"), col_names = FALSE)
+QC_GENO <- file.path(QC_DIR, "cohort_qc")
+run_tool(PLINK2, c("--bfile", step1, "--remove", file.path(QC_DIR, "remove.txt"), "--make-bed", "--out", QC_GENO),
+         "qc_final")
+```
+
+```{r}
+qc_summary <- tibble(
+  step = c("Start", "High missingness", "Heterozygosity", "Related or duplicate", "Final"),
+  samples = c(nrow(smiss), sum(smiss$F_MISS > MIND), nrow(het_out), length(related_out),
+              nrow(read_table(paste0(QC_GENO, ".fam"), col_names = FALSE, show_col_types = FALSE))))
+qc_summary
+cat("SNPs:", nrow(vmiss), "before,", length(readLines(paste0(QC_GENO, ".bim"))), "after QC\n")
+```
+
+**Next:** `03_ancestry_pcs.Rmd`.
